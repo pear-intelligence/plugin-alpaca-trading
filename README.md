@@ -8,6 +8,7 @@ A [Pear Intelligence](https://github.com/pear-intelligence/pear-intelligence) pl
 - **Position management** — View all positions, close partially or fully, liquidate all
 - **Order execution** — Market, limit, stop, stop-limit, and trailing-stop orders
 - **Crypto trading** — Buy/sell crypto pairs (BTC/USD, ETH/USD, etc.) by qty or dollar amount
+- **Options trading** — Search contracts, view chains with Greeks, place options orders, exercise contracts
 - **Real-time quotes** — Stock snapshots with bid/ask, daily OHLCV, prev close
 - **Historical bars** — Flexible timeframes from 1-minute to monthly
 - **Portfolio history** — Equity and P&L over time for performance tracking
@@ -59,6 +60,16 @@ curl -X POST http://localhost:3000/plugins/marketplace/install \
 | `alpaca_place_crypto_order` | Place crypto orders (by qty or dollar amount) |
 | `alpaca_orders` | List orders filtered by status |
 | `alpaca_cancel_order` | Cancel one or all open orders |
+
+### Options Trading
+
+| Tool | Description |
+|------|-------------|
+| `alpaca_option_contracts` | Search option contracts by symbol, expiration, strike, call/put |
+| `alpaca_option_chain` | Full option chain with Greeks (delta, gamma, theta, vega, rho, IV) |
+| `alpaca_option_quotes` | Real-time snapshots for specific option contracts |
+| `alpaca_place_option_order` | Place options orders (market, limit, stop, stop-limit) |
+| `alpaca_exercise_option` | Exercise a held option contract |
 
 ### Position Management
 
