@@ -1,7 +1,7 @@
 {
   "name": "alpaca-trading",
   "displayName": "Alpaca Trading",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Trade stocks, crypto, and options via Alpaca with paper and live trading modes. Portfolio management, market data, and order execution.",
   "author": "pearintelligence",
   "icon": "chart.bar.xaxis.ascending",

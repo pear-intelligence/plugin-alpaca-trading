@@ -80,6 +80,53 @@ interface AlpacaOrder {
   trail_price: string | null
 }
 
+interface AlpacaOptionContract {
+  id: string
+  symbol: string
+  name: string
+  status: string
+  tradable: boolean
+  expiration_date: string
+  root_symbol: string
+  underlying_symbol: string
+  underlying_asset_id: string
+  type: "call" | "put"
+  style: string
+  strike_price: string
+  size: string
+  open_interest: string | null
+  close_price: string | null
+  close_price_date: string | null
+}
+
+interface AlpacaOptionSnapshot {
+  latestQuote?: {
+    t: string
+    ax: string
+    ap: number
+    as: number
+    bx: string
+    bp: number
+    bs: number
+    c: string
+  }
+  latestTrade?: {
+    t: string
+    x: string
+    p: number
+    s: number
+    c: string
+  }
+  greeks?: {
+    delta: number
+    gamma: number
+    theta: number
+    vega: number
+    rho: number
+  }
+  impliedVolatility?: number
+}
+
 interface AlpacaClock {
   timestamp: string
   is_open: boolean
@@ -257,6 +304,26 @@ class AlpacaClient {
   }
   addToWatchlist(id: string, symbol: string) { return this.trade<unknown>("POST", `/v2/watchlists/${id}`, { symbol }) }
   deleteWatchlist(id: string) { return this.trade<void>("DELETE", `/v2/watchlists/${id}`) }
+
+  // ── Options ──
+  getOptionContracts(params: Record<string, string> = {}) {
+    const qs = new URLSearchParams(params).toString()
+    return this.trade<{ option_contracts: AlpacaOptionContract[] }>("GET", `/v2/options/contracts${qs ? `?${qs}` : ""}`)
+  }
+  getOptionContract(symbolOrId: string) {
+    return this.trade<AlpacaOptionContract>("GET", `/v2/options/contracts/${encodeURIComponent(symbolOrId)}`)
+  }
+  exerciseOption(symbolOrId: string) {
+    return this.trade<unknown>("POST", `/v2/positions/${encodeURIComponent(symbolOrId)}/exercise`)
+  }
+  getOptionSnapshots(symbols: string[]) {
+    return this.data<{ snapshots: Record<string, AlpacaOptionSnapshot> }>(`/v1beta1/options/snapshots`, { symbols: symbols.join(","), feed: "indicative" })
+  }
+  getOptionChain(underlyingSymbol: string, params: Record<string, string> = {}) {
+    const allParams = { ...params, feed: "indicative" }
+    const qs = new URLSearchParams(allParams).toString()
+    return this.data<{ snapshots: Record<string, AlpacaOptionSnapshot> }>(`/v1beta1/options/snapshots/${encodeURIComponent(underlyingSymbol)}${qs ? `?${qs}` : ""}`)
+  }
 }
 
 // ── Plugin Entry ────────────────────────────────────────────
@@ -843,6 +910,245 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
             if (watchlists.length === 0) return ok("No watchlists.")
             const lines = watchlists.map(w => `${w.name} (ID: ${w.id})`)
             return ok(`Watchlists:\n${lines.join("\n")}`)
+          } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
+        },
+      },
+      // ══════════════════════════════════════════════════════
+      //  OPTIONS TRADING
+      // ══════════════════════════════════════════════════════
+
+      {
+        definition: {
+          name: "alpaca_option_contracts",
+          description: "Search for option contracts by underlying symbol. Returns available contracts with strike prices, expirations, and type (call/put). Use this to find the right contract symbol before placing an options order.",
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              underlying_symbol: { type: "string", description: "Underlying stock symbol (e.g. AAPL, TSLA, SPY)" },
+              expiration_date: { type: "string", description: "Exact expiration date YYYY-MM-DD" },
+              expiration_date_gte: { type: "string", description: "Expiration on or after YYYY-MM-DD" },
+              expiration_date_lte: { type: "string", description: "Expiration on or before YYYY-MM-DD" },
+              strike_price_gte: { type: "string", description: "Minimum strike price" },
+              strike_price_lte: { type: "string", description: "Maximum strike price" },
+              type: { type: "string", description: "Contract type: call or put", enum: ["call", "put"] },
+              limit: { type: "number", description: "Max contracts to return (default: 25, max: 100)" },
+            },
+            required: ["underlying_symbol"],
+          },
+        },
+        handler: async (args) => {
+          try {
+            const params: Record<string, string> = {
+              underlying_symbols: (args.underlying_symbol as string).toUpperCase(),
+              limit: String(Math.min((args.limit as number) || 25, 100)),
+            }
+            if (args.expiration_date) params.expiration_date = args.expiration_date as string
+            if (args.expiration_date_gte) params.expiration_date_gte = args.expiration_date_gte as string
+            if (args.expiration_date_lte) params.expiration_date_lte = args.expiration_date_lte as string
+            if (args.strike_price_gte) params.strike_price_gte = args.strike_price_gte as string
+            if (args.strike_price_lte) params.strike_price_lte = args.strike_price_lte as string
+            if (args.type) params.type = args.type as string
+
+            const result = await getClient().getOptionContracts(params)
+            const contracts = result.option_contracts || []
+
+            if (contracts.length === 0) return ok("No option contracts found matching criteria.")
+
+            const lines = [`Option Contracts for ${(args.underlying_symbol as string).toUpperCase()} (${contracts.length} found)`, ``]
+            for (const c of contracts) {
+              const oi = c.open_interest ? `OI: ${c.open_interest}` : "OI: N/A"
+              const lastPrice = c.close_price ? `Last: $${formatMoney(c.close_price)}` : "Last: N/A"
+              lines.push(
+                `${c.symbol} — ${c.type.toUpperCase()} $${formatMoney(c.strike_price)} exp ${c.expiration_date}`,
+                `  ${lastPrice} | ${oi} | Tradable: ${c.tradable ? "Yes" : "No"}`,
+                ``
+              )
+            }
+            return ok(lines.join("\n"))
+          } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
+        },
+      },
+
+      {
+        definition: {
+          name: "alpaca_place_option_order",
+          description: "Place an options order. Use alpaca_option_contracts first to find the contract symbol. Supports market, limit, stop, and stop-limit orders. Options orders must use time_in_force='day' and whole number quantities only.",
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              symbol: { type: "string", description: "Option contract symbol in OCC format (e.g. AAPL250221C00230000)" },
+              side: { type: "string", description: "buy or sell", enum: ["buy", "sell"] },
+              qty: { type: "number", description: "Number of contracts (whole numbers only)" },
+              order_type: { type: "string", description: "Order type", enum: ["market", "limit", "stop", "stop_limit"] },
+              limit_price: { type: "number", description: "Limit price per contract (required for limit and stop_limit)" },
+              stop_price: { type: "number", description: "Stop price (required for stop and stop_limit)" },
+            },
+            required: ["symbol", "side", "qty"],
+          },
+        },
+        handler: async (args) => {
+          try {
+            const qty = Math.floor(args.qty as number)
+            if (qty < 1) return err("Options qty must be at least 1 whole contract.")
+
+            const order: Record<string, unknown> = {
+              symbol: (args.symbol as string).toUpperCase(),
+              side: args.side,
+              qty: String(qty),
+              type: args.order_type || "market",
+              time_in_force: "day",
+            }
+            if (args.limit_price) order.limit_price = String(args.limit_price)
+            if (args.stop_price) order.stop_price = String(args.stop_price)
+
+            const result = await getClient().placeOrder(order)
+
+            const lines = [
+              `Options Order Placed [${modeLabel()}]`,
+              `${result.side.toUpperCase()} ${result.qty} x ${result.symbol}`,
+              `Type: ${result.order_type} | TIF: ${result.time_in_force}`,
+              result.limit_price ? `Limit: $${formatMoney(result.limit_price)}` : null,
+              result.stop_price ? `Stop: $${formatMoney(result.stop_price)}` : null,
+              `Status: ${result.status}`,
+              `Order ID: ${result.id}`,
+            ].filter(Boolean)
+
+            return ok(lines.join("\n"))
+          } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
+        },
+      },
+
+      {
+        definition: {
+          name: "alpaca_exercise_option",
+          description: "Exercise a held option contract. All available shares of the contract will be exercised. Only works during market hours.",
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              symbol: { type: "string", description: "Option contract symbol or contract ID to exercise" },
+            },
+            required: ["symbol"],
+          },
+        },
+        handler: async (args) => {
+          try {
+            const symbol = (args.symbol as string).toUpperCase()
+            await getClient().exerciseOption(symbol)
+            return ok(`Exercise request submitted for ${symbol} [${modeLabel()}]`)
+          } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
+        },
+      },
+
+      {
+        definition: {
+          name: "alpaca_option_chain",
+          description: "Get the option chain (snapshots with quotes and greeks) for an underlying symbol. Shows bid/ask, last trade, delta, gamma, theta, vega, and implied volatility.",
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              underlying_symbol: { type: "string", description: "Underlying stock symbol (e.g. AAPL, TSLA, SPY)" },
+              expiration_date: { type: "string", description: "Filter to specific expiration YYYY-MM-DD" },
+              expiration_date_gte: { type: "string", description: "Expiration on or after YYYY-MM-DD" },
+              expiration_date_lte: { type: "string", description: "Expiration on or before YYYY-MM-DD" },
+              type: { type: "string", description: "Filter by call or put", enum: ["call", "put"] },
+              strike_price_gte: { type: "string", description: "Minimum strike price" },
+              strike_price_lte: { type: "string", description: "Maximum strike price" },
+              limit: { type: "number", description: "Max results (default: 25)" },
+            },
+            required: ["underlying_symbol"],
+          },
+        },
+        handler: async (args) => {
+          try {
+            const symbol = (args.underlying_symbol as string).toUpperCase()
+            const params: Record<string, string> = {}
+            if (args.expiration_date) params.expiration_date = args.expiration_date as string
+            if (args.expiration_date_gte) params.expiration_date_gte = args.expiration_date_gte as string
+            if (args.expiration_date_lte) params.expiration_date_lte = args.expiration_date_lte as string
+            if (args.type) params.type = args.type as string
+            if (args.strike_price_gte) params.strike_price_gte = args.strike_price_gte as string
+            if (args.strike_price_lte) params.strike_price_lte = args.strike_price_lte as string
+            if (args.limit) params.limit = String(Math.min(args.limit as number, 100))
+
+            const result = await getClient().getOptionChain(symbol, params)
+            const snaps = result.snapshots || {}
+            const keys = Object.keys(snaps)
+
+            if (keys.length === 0) return ok(`No option chain data for ${symbol}`)
+
+            const lines = [`Option Chain: ${symbol} (${keys.length} contracts)`, ``]
+            for (const contractSymbol of keys.slice(0, 30)) {
+              const snap = snaps[contractSymbol]
+              const bid = snap.latestQuote ? `$${formatMoney(snap.latestQuote.bp)}` : "N/A"
+              const ask = snap.latestQuote ? `$${formatMoney(snap.latestQuote.ap)}` : "N/A"
+              const last = snap.latestTrade ? `$${formatMoney(snap.latestTrade.p)}` : "N/A"
+              const iv = snap.impliedVolatility ? `${(snap.impliedVolatility * 100).toFixed(1)}%` : "N/A"
+
+              let greeksStr = ""
+              if (snap.greeks) {
+                const g = snap.greeks
+                greeksStr = ` | Δ${g.delta.toFixed(3)} Γ${g.gamma.toFixed(4)} Θ${g.theta.toFixed(3)} V${g.vega.toFixed(3)}`
+              }
+
+              lines.push(
+                `${contractSymbol}`,
+                `  Bid: ${bid} | Ask: ${ask} | Last: ${last} | IV: ${iv}${greeksStr}`,
+                ``
+              )
+            }
+
+            if (keys.length > 30) {
+              lines.push(`... and ${keys.length - 30} more contracts`)
+            }
+
+            return ok(lines.join("\n"))
+          } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
+        },
+      },
+
+      {
+        definition: {
+          name: "alpaca_option_quotes",
+          description: "Get real-time snapshots for specific option contract symbols. Shows bid/ask, last trade, greeks, and implied volatility.",
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              symbols: { type: "array", items: { type: "string" }, description: "Array of option contract symbols in OCC format" },
+            },
+            required: ["symbols"],
+          },
+        },
+        handler: async (args) => {
+          try {
+            const symbols = (args.symbols as string[]).map(s => s.toUpperCase())
+            const result = await getClient().getOptionSnapshots(symbols)
+            const snaps = result.snapshots || {}
+
+            if (Object.keys(snaps).length === 0) return ok("No option snapshot data available.")
+
+            const lines: string[] = []
+            for (const sym of symbols) {
+              const snap = snaps[sym]
+              if (!snap) { lines.push(`${sym}: No data`); continue }
+
+              const bid = snap.latestQuote ? `$${formatMoney(snap.latestQuote.bp)}` : "N/A"
+              const ask = snap.latestQuote ? `$${formatMoney(snap.latestQuote.ap)}` : "N/A"
+              const last = snap.latestTrade ? `$${formatMoney(snap.latestTrade.p)}` : "N/A"
+              const iv = snap.impliedVolatility ? `${(snap.impliedVolatility * 100).toFixed(1)}%` : "N/A"
+
+              let greeksStr = ""
+              if (snap.greeks) {
+                const g = snap.greeks
+                greeksStr = `\n  Greeks: Δ${g.delta.toFixed(3)} Γ${g.gamma.toFixed(4)} Θ${g.theta.toFixed(3)} V${g.vega.toFixed(3)} ρ${g.rho.toFixed(4)}`
+              }
+
+              lines.push(
+                `${sym}`,
+                `  Bid: ${bid} | Ask: ${ask} | Last: ${last} | IV: ${iv}${greeksStr}`,
+                ``
+              )
+            }
+            return ok(lines.join("\n"))
           } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
         },
       },
