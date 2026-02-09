@@ -1,10 +1,11 @@
-# Alpaca Trading Plugin
+# Alpaca Trading Plugin (Dual Mode)
 
-A [Pear Intelligence](https://github.com/pear-intelligence/pear-intelligence) plugin for trading stocks, crypto, and options via the [Alpaca](https://alpaca.markets/) brokerage API. Supports both **paper trading** (simulated) and **live trading** (real money).
+A [Pear Intelligence](https://github.com/pear-intelligence/pear-intelligence) plugin for trading stocks, crypto, and options via the [Alpaca](https://alpaca.markets/) brokerage API. Supports simultaneous **paper trading** (simulated) and **live trading** (real money) in the same plugin.
 
 ## Features
 
-- **Account overview** — Equity, buying power, cash, margin, day trade count
+- **Dual Mode Trading** — Use both paper and live accounts simultaneously without switching
+- **Account overview** — Equity, buying power, cash, margin, day trade count for both accounts
 - **Position management** — View all positions, close partially or fully, liquidate all
 - **Order execution** — Market, limit, stop, stop-limit, and trailing-stop orders
 - **Crypto trading** — Buy/sell crypto pairs (BTC/USD, ETH/USD, etc.) by qty or dollar amount
@@ -28,10 +29,12 @@ curl -X POST http://localhost:3000/plugins/marketplace/install \
 ## Setup
 
 1. Create an Alpaca account at [alpaca.markets/signup](https://app.alpaca.markets/signup)
-2. Get your API Key and Secret from the Alpaca dashboard (paper or live)
+2. Get your API Keys and Secrets from the Alpaca dashboard (both paper and live if desired)
 3. Open the Pear Intelligence app → Settings → Plugins → Alpaca Trading
-4. Enter your API Key and Secret Key
-5. Select trading mode: **Paper** (default, simulated) or **Live** (real money)
+4. Configure credentials:
+   - **Paper Trading**: Enter `paperApiKey` and `paperSecretKey`
+   - **Live Trading**: Enter `liveApiKey` and `liveSecretKey`
+5. Both modes can be used simultaneously - just specify `mode: "paper"` or `mode: "live"` when calling tools
 
 ## MCP Tools
 
@@ -89,25 +92,30 @@ curl -X POST http://localhost:3000/plugins/marketplace/install \
 
 When enabled, the plugin also exposes REST endpoints under `/px/alpaca-trading/`:
 
-- `GET /px/alpaca-trading/account` — Account info JSON
-- `GET /px/alpaca-trading/positions` — Open positions JSON
-- `GET /px/alpaca-trading/orders` — Open orders JSON
+- `GET /px/alpaca-trading/accounts` — Both paper and live account info JSON
+- `GET /px/alpaca-trading/positions/:mode` — Open positions JSON (mode: paper or live)
+- `GET /px/alpaca-trading/orders/:mode` — Open orders JSON (mode: paper or live)
 - `GET /px/alpaca-trading/clock` — Market clock JSON
 
 ## Trading Modes
 
 | Mode | Description | Risk |
 |------|-------------|------|
-| **Paper** (default) | Simulated trading with fake money | None |
+| **Paper** | Simulated trading with fake money | None |
 | **Live** | Real money, real trades | Real financial risk |
 
-Paper mode is the default. To switch to live trading, change the "Trading Mode" setting and use your live API credentials.
+Both modes are available simultaneously. When calling any trading tool, specify `mode: "paper"` or `mode: "live"` as a required parameter. This allows you to:
+- Test strategies on paper while trading live
+- Compare performance between accounts
+- Manage both accounts from a single interface
 
 ## Safety
 
-- The plugin always displays `[PAPER]` or `[LIVE]` in tool responses so you know which mode you're in
-- Order placement tools include descriptions reminding to confirm the mode with the user
+- All trading tools require explicit `mode` parameter (`"paper"` or `"live"`) - no default mode
+- The plugin always displays `[PAPER]` or `[LIVE]` in tool responses so you know which account is being used
+- Order placement tools include descriptions reminding to specify and confirm the mode
 - The `close_all_positions` tool is clearly labeled as a liquidation action
+- Market data tools (quotes, bars) use whichever credentials are available (paper or live) since data is the same
 
 ## Development
 

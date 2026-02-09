@@ -1,8 +1,8 @@
 {
   "name": "alpaca-trading",
   "displayName": "Alpaca Trading",
-  "version": "1.1.0",
-  "description": "Trade stocks, crypto, and options via Alpaca with paper and live trading modes. Portfolio management, market data, and order execution.",
+  "version": "2.0.0",
+  "description": "Trade stocks, crypto, and options via Alpaca with simultaneous paper and live trading modes. Portfolio management, market data, and order execution.",
   "author": "pearintelligence",
   "icon": "chart.bar.xaxis.ascending",
   "main": "index.ts",
@@ -15,26 +15,32 @@
   "hotReloadable": true,
   "settings": [
     {
-      "key": "alpacaApiKey",
-      "label": "Alpaca API Key",
-      "description": "API Key ID from your Alpaca dashboard",
+      "key": "paperApiKey",
+      "label": "Paper Trading API Key",
+      "description": "API Key ID from your Alpaca paper trading dashboard",
       "type": "secret",
       "default": ""
     },
     {
-      "key": "alpacaSecretKey",
-      "label": "Alpaca Secret Key",
-      "description": "Secret key from your Alpaca dashboard",
+      "key": "paperSecretKey",
+      "label": "Paper Trading Secret Key",
+      "description": "Secret key from your Alpaca paper trading dashboard",
       "type": "secret",
       "default": ""
     },
     {
-      "key": "tradingMode",
-      "label": "Trading Mode",
-      "description": "Paper mode uses simulated money. Live mode trades real funds.",
-      "type": "select",
-      "options": ["paper", "live"],
-      "default": "paper"
+      "key": "liveApiKey",
+      "label": "Live Trading API Key",
+      "description": "API Key ID from your Alpaca live trading dashboard (REAL MONEY)",
+      "type": "secret",
+      "default": ""
+    },
+    {
+      "key": "liveSecretKey",
+      "label": "Live Trading Secret Key",
+      "description": "Secret key from your Alpaca live trading dashboard (REAL MONEY)",
+      "type": "secret",
+      "default": ""
     },
     {
       "key": "getAlpacaAccount",

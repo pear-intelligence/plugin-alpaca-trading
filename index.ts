@@ -329,38 +329,76 @@ class AlpacaClient {
 // ── Plugin Entry ────────────────────────────────────────────
 
 export async function activate(ctx: PluginContext): Promise<PluginRegistrations> {
-  ctx.log.info("Activating alpaca-trading plugin")
+  ctx.log.info("Activating alpaca-trading plugin (Dual Mode)")
 
-  function getClient(): AlpacaClient {
-    const apiKey = ctx.getSetting<string>("alpacaApiKey")
-    const secretKey = ctx.getSetting<string>("alpacaSecretKey")
-    if (!apiKey || !secretKey) throw new Error("Alpaca API credentials not configured. Set them in plugin settings.")
-    const mode = ctx.getSetting<string>("tradingMode") || "paper"
-    return new AlpacaClient(apiKey, secretKey, mode === "paper")
+  function getPaperClient(): AlpacaClient | null {
+    const apiKey = ctx.getSetting<string>("paperApiKey")
+    const secretKey = ctx.getSetting<string>("paperSecretKey")
+    if (!apiKey || !secretKey) return null
+    return new AlpacaClient(apiKey, secretKey, true)
   }
 
-  function modeLabel(): string {
-    const mode = ctx.getSetting<string>("tradingMode") || "paper"
+  function getLiveClient(): AlpacaClient | null {
+    const apiKey = ctx.getSetting<string>("liveApiKey")
+    const secretKey = ctx.getSetting<string>("liveSecretKey")
+    if (!apiKey || !secretKey) return null
+    return new AlpacaClient(apiKey, secretKey, false)
+  }
+
+  function getClient(mode: "paper" | "live"): AlpacaClient {
+    const client = mode === "paper" ? getPaperClient() : getLiveClient()
+    if (!client) {
+      throw new Error(`${mode.toUpperCase()} trading credentials not configured. Set them in plugin settings.`)
+    }
+    return client
+  }
+
+  function modeLabel(mode: "paper" | "live"): string {
     return mode === "paper" ? "PAPER" : "LIVE"
   }
 
   return {
     routes: () =>
       new Elysia()
-        .get("/account", async () => {
-          try { return await getClient().getAccount() }
+        .get("/accounts", async () => {
+          const results: Record<string, any> = {}
+
+          const paperClient = getPaperClient()
+          if (paperClient) {
+            try { results.paper = await paperClient.getAccount() }
+            catch (e) { results.paper = { error: e instanceof Error ? e.message : String(e) } }
+          } else {
+            results.paper = { error: "Paper trading credentials not configured" }
+          }
+
+          const liveClient = getLiveClient()
+          if (liveClient) {
+            try { results.live = await liveClient.getAccount() }
+            catch (e) { results.live = { error: e instanceof Error ? e.message : String(e) } }
+          } else {
+            results.live = { error: "Live trading credentials not configured" }
+          }
+
+          return results
+        })
+        .get("/positions/:mode", async ({ params: { mode } }) => {
+          if (mode !== "paper" && mode !== "live") {
+            return { error: "Invalid mode. Use 'paper' or 'live'" }
+          }
+          try { return await getClient(mode).getPositions() }
           catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
         })
-        .get("/positions", async () => {
-          try { return await getClient().getPositions() }
-          catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
-        })
-        .get("/orders", async () => {
-          try { return await getClient().getOrders() }
+        .get("/orders/:mode", async ({ params: { mode } }) => {
+          if (mode !== "paper" && mode !== "live") {
+            return { error: "Invalid mode. Use 'paper' or 'live'" }
+          }
+          try { return await getClient(mode).getOrders() }
           catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
         })
         .get("/clock", async () => {
-          try { return await getClient().getClock() }
+          const client = getPaperClient() || getLiveClient()
+          if (!client) return { error: "No trading credentials configured" }
+          try { return await client.getClock() }
           catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
         }),
 
@@ -372,30 +410,86 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
       {
         definition: {
           name: "alpaca_account",
-          description: "Get Alpaca trading account info: buying power, equity, cash, margin, P&L, and day trade count. Shows whether you're in paper or live mode.",
-          inputSchema: { type: "object" as const, properties: {}, required: [] },
+          description: "Get Alpaca trading account info for both paper and live accounts. Shows buying power, equity, cash, margin, P&L, and day trade count.",
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              mode: {
+                type: "string" as const,
+                enum: ["paper", "live", "both"],
+                description: "Which account(s) to fetch. Default is 'both'",
+                default: "both"
+              }
+            },
+            required: []
+          },
         },
-        handler: async () => {
+        handler: async (args) => {
           try {
-            const client = getClient()
-            const acct = await client.getAccount()
-            const lines = [
-              `Alpaca Account [${modeLabel()}]`,
-              `Status: ${acct.status}`,
-              ``,
-              `Equity: $${formatMoney(acct.equity)}`,
-              `Cash: $${formatMoney(acct.cash)}`,
-              `Buying Power: $${formatMoney(acct.buying_power)}`,
-              `Portfolio Value: $${formatMoney(acct.portfolio_value)}`,
-              ``,
-              `Long Market Value: $${formatMoney(acct.long_market_value)}`,
-              `Short Market Value: $${formatMoney(acct.short_market_value)}`,
-              ``,
-              `Day Trades (last 5 days): ${acct.daytrade_count}`,
-              `Pattern Day Trader: ${acct.pattern_day_trader ? "Yes" : "No"}`,
-              `DT Buying Power: $${formatMoney(acct.daytrading_buying_power)}`,
-            ]
-            return ok(lines.join("\n"))
+            const mode = args.mode as string || "both"
+            const results: string[] = []
+
+            if (mode === "paper" || mode === "both") {
+              const paperClient = getPaperClient()
+              if (paperClient) {
+                try {
+                  const acct = await paperClient.getAccount()
+                  results.push(...[
+                    `=== PAPER ACCOUNT ===`,
+                    `Status: ${acct.status}`,
+                    ``,
+                    `Equity: $${formatMoney(acct.equity)}`,
+                    `Cash: $${formatMoney(acct.cash)}`,
+                    `Buying Power: $${formatMoney(acct.buying_power)}`,
+                    `Portfolio Value: $${formatMoney(acct.portfolio_value)}`,
+                    ``,
+                    `Long Market Value: $${formatMoney(acct.long_market_value)}`,
+                    `Short Market Value: $${formatMoney(acct.short_market_value)}`,
+                    ``,
+                    `Day Trades (last 5 days): ${acct.daytrade_count}`,
+                    `Pattern Day Trader: ${acct.pattern_day_trader ? "Yes" : "No"}`,
+                    `DT Buying Power: $${formatMoney(acct.daytrading_buying_power)}`,
+                  ])
+                } catch (e) {
+                  results.push(`=== PAPER ACCOUNT ===`, `Error: ${e instanceof Error ? e.message : String(e)}`)
+                }
+              } else {
+                results.push(`=== PAPER ACCOUNT ===`, `Not configured`)
+              }
+            }
+
+            if (mode === "live" || mode === "both") {
+              if (results.length > 0) results.push("", "")
+
+              const liveClient = getLiveClient()
+              if (liveClient) {
+                try {
+                  const acct = await liveClient.getAccount()
+                  results.push(...[
+                    `=== LIVE ACCOUNT ===`,
+                    `Status: ${acct.status}`,
+                    ``,
+                    `Equity: $${formatMoney(acct.equity)}`,
+                    `Cash: $${formatMoney(acct.cash)}`,
+                    `Buying Power: $${formatMoney(acct.buying_power)}`,
+                    `Portfolio Value: $${formatMoney(acct.portfolio_value)}`,
+                    ``,
+                    `Long Market Value: $${formatMoney(acct.long_market_value)}`,
+                    `Short Market Value: $${formatMoney(acct.short_market_value)}`,
+                    ``,
+                    `Day Trades (last 5 days): ${acct.daytrade_count}`,
+                    `Pattern Day Trader: ${acct.pattern_day_trader ? "Yes" : "No"}`,
+                    `DT Buying Power: $${formatMoney(acct.daytrading_buying_power)}`,
+                  ])
+                } catch (e) {
+                  results.push(`=== LIVE ACCOUNT ===`, `Error: ${e instanceof Error ? e.message : String(e)}`)
+                }
+              } else {
+                results.push(`=== LIVE ACCOUNT ===`, `Not configured`)
+              }
+            }
+
+            return ok(results.join("\n"))
           } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
         },
       },
@@ -404,14 +498,25 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
         definition: {
           name: "alpaca_positions",
           description: "List all open positions in the Alpaca account. Shows symbol, qty, avg entry, current price, market value, and unrealized P&L.",
-          inputSchema: { type: "object" as const, properties: {}, required: [] },
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              mode: {
+                type: "string" as const,
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              }
+            },
+            required: ["mode"]
+          },
         },
-        handler: async () => {
+        handler: async (args) => {
           try {
-            const positions = await getClient().getPositions()
-            if (positions.length === 0) return ok(`No open positions [${modeLabel()}]`)
+            const mode = args.mode as "paper" | "live"
+            const positions = await getClient(mode).getPositions()
+            if (positions.length === 0) return ok(`No open positions [${mode.toUpperCase()}]`)
 
-            const lines = [`Open Positions [${modeLabel()}] (${positions.length})`, ``]
+            const lines = [`Open Positions [${mode.toUpperCase()}] (${positions.length})`, ``]
             for (const p of positions) {
               const plSign = parseFloat(p.unrealized_pl) >= 0 ? "+" : ""
               lines.push(
@@ -433,19 +538,26 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               period: { type: "string", description: "History period: 1D, 1W, 1M, 3M, 6M, 1A (1 year), all", enum: ["1D", "1W", "1M", "3M", "6M", "1A", "all"] },
               timeframe: { type: "string", description: "Bar resolution: 1Min, 5Min, 15Min, 1H, 1D", enum: ["1Min", "5Min", "15Min", "1H", "1D"] },
             },
+            required: ["mode"]
           },
         },
         handler: async (args) => {
           try {
+            const mode = args.mode as "paper" | "live"
             const period = (args.period as string) || "1M"
             const timeframe = (args.timeframe as string) || "1D"
-            const hist = await getClient().getPortfolioHistory(period, timeframe)
+            const hist = await getClient(mode).getPortfolioHistory(period, timeframe)
 
             if (!hist.timestamp || hist.timestamp.length === 0) {
-              return ok("No portfolio history available.")
+              return ok(`No portfolio history available [${mode.toUpperCase()}].`)
             }
 
             const count = hist.timestamp.length
@@ -455,7 +567,7 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
             const totalPL = hist.profit_loss.reduce((a, b) => a + b, 0)
 
             const lines = [
-              `Portfolio History [${modeLabel()}] — ${period} @ ${timeframe}`,
+              `Portfolio History [${mode.toUpperCase()}] — ${period} @ ${timeframe}`,
               `Base Value: $${formatMoney(hist.base_value)}`,
               `Current Equity: $${formatMoney(latest)}`,
               `Period Return: ${totalReturn >= 0 ? "+" : ""}${totalReturn.toFixed(2)}%`,
@@ -495,7 +607,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
         handler: async (args) => {
           try {
             const symbol = (args.symbol as string).toUpperCase()
-            const snap = await getClient().getSnapshot(symbol)
+            // Market data is same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
+            const snap = await client.getSnapshot(symbol)
 
             const price = snap.latestTrade.p
             const prevClose = snap.prevDailyBar.c
@@ -530,7 +646,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
         handler: async (args) => {
           try {
             const symbols = (args.symbols as string[]).map(s => s.toUpperCase())
-            const snaps = await getClient().getSnapshots(symbols)
+            // Market data is same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
+            const snaps = await client.getSnapshots(symbols)
 
             const lines: string[] = []
             for (const sym of symbols) {
@@ -570,8 +690,12 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
             const days = Math.min((args.days as number) || 30, 365)
             const limit = String(Math.min((args.limit as number) || 50, 200))
 
+            // Market data is same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
             const start = new Date(Date.now() - days * 86400000).toISOString().split("T")[0]
-            const result = await getClient().getBars(symbol, timeframe, start, undefined, limit)
+            const result = await client.getBars(symbol, timeframe, start, undefined, limit)
 
             if (!result.bars || result.bars.length === 0) {
               return err(`No bar data for ${symbol}`)
@@ -616,7 +740,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
         handler: async (args) => {
           try {
             const symbol = (args.symbol as string).toUpperCase()
-            const snap = await getClient().getCryptoSnapshot(symbol)
+            // Market data is same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
+            const snap = await client.getCryptoSnapshot(symbol)
 
             const price = snap.latestTrade.p
             const lines = [
@@ -636,10 +764,15 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
       {
         definition: {
           name: "alpaca_place_order",
-          description: "Place a stock or ETF order. Supports market, limit, stop, stop-limit, and trailing-stop orders. IMPORTANT: Confirm the trading mode (paper/live) with the user before placing orders.",
+          description: "Place a stock or ETF order. Supports market, limit, stop, stop-limit, and trailing-stop orders. IMPORTANT: Specify the mode (paper/live) to determine which account to use.",
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. REQUIRED."
+              },
               symbol: { type: "string", description: "Ticker symbol (e.g. AAPL)" },
               side: { type: "string", description: "buy or sell", enum: ["buy", "sell"] },
               qty: { type: "number", description: "Number of shares (whole or fractional)" },
@@ -651,11 +784,12 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
               time_in_force: { type: "string", description: "Time in force", enum: ["day", "gtc", "opg", "cls", "ioc", "fok"] },
               extended_hours: { type: "boolean", description: "Allow extended hours trading (limit orders only)" },
             },
-            required: ["symbol", "side", "qty"],
+            required: ["mode", "symbol", "side", "qty"],
           },
         },
         handler: async (args) => {
           try {
+            const mode = args.mode as "paper" | "live"
             const order: Record<string, unknown> = {
               symbol: (args.symbol as string).toUpperCase(),
               side: args.side || "buy",
@@ -669,10 +803,10 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
             if (args.trail_price) order.trail_price = String(args.trail_price)
             if (args.extended_hours) order.extended_hours = true
 
-            const result = await getClient().placeOrder(order)
+            const result = await getClient(mode).placeOrder(order)
 
             const lines = [
-              `Order Placed [${modeLabel()}]`,
+              `Order Placed [${mode.toUpperCase()}]`,
               `${result.side.toUpperCase()} ${result.qty} ${result.symbol}`,
               `Type: ${result.order_type} | TIF: ${result.time_in_force}`,
               result.limit_price ? `Limit: $${formatMoney(result.limit_price)}` : null,
@@ -693,6 +827,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. REQUIRED."
+              },
               symbol: { type: "string", description: "Crypto pair (e.g. BTC/USD, ETH/USD)" },
               side: { type: "string", description: "buy or sell", enum: ["buy", "sell"] },
               qty: { type: "number", description: "Quantity of crypto (e.g. 0.5 for half a BTC)" },
@@ -701,7 +840,7 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
               limit_price: { type: "number", description: "Limit price" },
               time_in_force: { type: "string", description: "Time in force for crypto", enum: ["gtc", "ioc"] },
             },
-            required: ["symbol", "side"],
+            required: ["mode", "symbol", "side"],
           },
         },
         handler: async (args) => {
@@ -718,10 +857,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
 
             if (args.limit_price) order.limit_price = String(args.limit_price)
 
-            const result = await getClient().placeOrder(order)
+            const mode = args.mode as "paper" | "live"
+            const result = await getClient(mode).placeOrder(order)
 
             const lines = [
-              `Crypto Order Placed [${modeLabel()}]`,
+              `Crypto Order Placed [${mode.toUpperCase()}]`,
               `${result.side.toUpperCase()} ${result.qty || "$" + formatMoney(args.notional as number)} ${result.symbol}`,
               `Type: ${result.order_type} | TIF: ${result.time_in_force}`,
               `Status: ${result.status}`,
@@ -739,20 +879,27 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               status: { type: "string", description: "Filter by status", enum: ["open", "closed", "all"] },
               limit: { type: "number", description: "Max orders to return (default: 20)" },
             },
+            required: ["mode"]
           },
         },
         handler: async (args) => {
           try {
+            const mode = args.mode as "paper" | "live"
             const status = (args.status as string) || "open"
             const limit = Math.min((args.limit as number) || 20, 100)
-            const orders = await getClient().getOrders(status, limit)
+            const orders = await getClient(mode).getOrders(status, limit)
 
-            if (orders.length === 0) return ok(`No ${status} orders [${modeLabel()}]`)
+            if (orders.length === 0) return ok(`No ${status} orders [${mode.toUpperCase()}]`)
 
-            const lines = [`${status.charAt(0).toUpperCase() + status.slice(1)} Orders [${modeLabel()}] (${orders.length})`, ``]
+            const lines = [`${status.charAt(0).toUpperCase() + status.slice(1)} Orders [${mode.toUpperCase()}] (${orders.length})`, ``]
             for (const o of orders) {
               const time = new Date(o.created_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
               const filled = o.filled_avg_price ? ` @ $${formatMoney(o.filled_avg_price)}` : ""
@@ -775,19 +922,26 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               order_id: { type: "string", description: "Order ID to cancel. Omit to cancel ALL open orders." },
             },
+            required: ["mode"]
           },
         },
         handler: async (args) => {
           try {
-            const client = getClient()
+            const mode = args.mode as "paper" | "live"
+            const client = getClient(mode)
             if (args.order_id) {
               await client.cancelOrder(args.order_id as string)
-              return ok(`Order ${args.order_id} cancelled [${modeLabel()}]`)
+              return ok(`Order ${args.order_id} cancelled [${mode.toUpperCase()}]`)
             } else {
               await client.cancelAllOrders()
-              return ok(`All open orders cancelled [${modeLabel()}]`)
+              return ok(`All open orders cancelled [${mode.toUpperCase()}]`)
             }
           } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
         },
@@ -804,21 +958,27 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               symbol: { type: "string", description: "Symbol to close" },
               qty: { type: "number", description: "Number of shares to sell (omit for full close)" },
               percentage: { type: "number", description: "Percentage of position to close (0-100)" },
             },
-            required: ["symbol"],
+            required: ["mode", "symbol"],
           },
         },
         handler: async (args) => {
           try {
+            const mode = args.mode as "paper" | "live"
             const symbol = (args.symbol as string).toUpperCase()
             const qty = args.qty ? String(args.qty) : undefined
             const pct = args.percentage ? String(args.percentage) : undefined
-            const result = await getClient().closePosition(symbol, qty, pct)
+            const result = await getClient(mode).closePosition(symbol, qty, pct)
 
-            return ok(`Position close order placed for ${symbol} [${modeLabel()}]\nStatus: ${result.status}\nOrder ID: ${result.id}`)
+            return ok(`Position close order placed for ${symbol} [${mode.toUpperCase()}]\nStatus: ${result.status}\nOrder ID: ${result.id}`)
           } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
         },
       },
@@ -830,15 +990,22 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               cancel_orders: { type: "boolean", description: "Also cancel all open orders (default: true)" },
             },
+            required: ["mode"]
           },
         },
         handler: async (args) => {
           try {
+            const mode = args.mode as "paper" | "live"
             const cancel = args.cancel_orders !== false
-            await getClient().closeAllPositions(cancel)
-            return ok(`All positions closed${cancel ? " and orders cancelled" : ""} [${modeLabel()}]`)
+            await getClient(mode).closeAllPositions(cancel)
+            return ok(`All positions closed${cancel ? " and orders cancelled" : ""} [${mode.toUpperCase()}]`)
           } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
         },
       },
@@ -855,7 +1022,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
         },
         handler: async () => {
           try {
-            const clock = await getClient().getClock()
+            // Market clock is same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
+            const clock = await client.getClock()
             const status = clock.is_open ? "OPEN" : "CLOSED"
             const nextOpen = new Date(clock.next_open).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })
             const nextClose = new Date(clock.next_close).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })
@@ -881,35 +1052,42 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               action: { type: "string", description: "Action to perform", enum: ["list", "create", "view"] },
               name: { type: "string", description: "Watchlist name (for create)" },
               symbols: { type: "array", items: { type: "string" }, description: "Symbols to add (for create)" },
               watchlist_id: { type: "string", description: "Watchlist ID (for view)" },
             },
+            required: ["mode"]
           },
         },
         handler: async (args) => {
           try {
-            const client = getClient()
+            const mode = args.mode as "paper" | "live"
+            const client = getClient(mode)
             const action = (args.action as string) || "list"
 
             if (action === "create") {
               if (!args.name) return err("Name is required to create a watchlist.")
               const symbols = (args.symbols as string[]) || []
               await client.createWatchlist(args.name as string, symbols.map(s => s.toUpperCase()))
-              return ok(`Watchlist "${args.name}" created with ${symbols.length} symbols`)
+              return ok(`Watchlist "${args.name}" created with ${symbols.length} symbols [${mode.toUpperCase()}]`)
             }
 
             if (action === "view" && args.watchlist_id) {
               const wl = await client.getWatchlist(args.watchlist_id as string)
               const syms = wl.assets.map(a => a.symbol).join(", ")
-              return ok(`${wl.name}: ${syms || "(empty)"}`)
+              return ok(`${wl.name}: ${syms || "(empty)"} [${mode.toUpperCase()}]`)
             }
 
             const watchlists = await client.getWatchlists()
-            if (watchlists.length === 0) return ok("No watchlists.")
+            if (watchlists.length === 0) return ok(`No watchlists [${mode.toUpperCase()}].`)
             const lines = watchlists.map(w => `${w.name} (ID: ${w.id})`)
-            return ok(`Watchlists:\n${lines.join("\n")}`)
+            return ok(`Watchlists [${mode.toUpperCase()}]:\n${lines.join("\n")}`)
           } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
         },
       },
@@ -949,7 +1127,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
             if (args.strike_price_lte) params.strike_price_lte = args.strike_price_lte as string
             if (args.type) params.type = args.type as string
 
-            const result = await getClient().getOptionContracts(params)
+            // Options contracts are same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
+            const result = await client.getOptionContracts(params)
             const contracts = result.option_contracts || []
 
             if (contracts.length === 0) return ok("No option contracts found matching criteria.")
@@ -976,6 +1158,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               symbol: { type: "string", description: "Option contract symbol in OCC format (e.g. AAPL250221C00230000)" },
               side: { type: "string", description: "buy or sell", enum: ["buy", "sell"] },
               qty: { type: "number", description: "Number of contracts (whole numbers only)" },
@@ -983,11 +1170,12 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
               limit_price: { type: "number", description: "Limit price per contract (required for limit and stop_limit)" },
               stop_price: { type: "number", description: "Stop price (required for stop and stop_limit)" },
             },
-            required: ["symbol", "side", "qty"],
+            required: ["mode", "symbol", "side", "qty"],
           },
         },
         handler: async (args) => {
           try {
+            const mode = args.mode as "paper" | "live"
             const qty = Math.floor(args.qty as number)
             if (qty < 1) return err("Options qty must be at least 1 whole contract.")
 
@@ -1001,10 +1189,10 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
             if (args.limit_price) order.limit_price = String(args.limit_price)
             if (args.stop_price) order.stop_price = String(args.stop_price)
 
-            const result = await getClient().placeOrder(order)
+            const result = await getClient(mode).placeOrder(order)
 
             const lines = [
-              `Options Order Placed [${modeLabel()}]`,
+              `Options Order Placed [${mode.toUpperCase()}]`,
               `${result.side.toUpperCase()} ${result.qty} x ${result.symbol}`,
               `Type: ${result.order_type} | TIF: ${result.time_in_force}`,
               result.limit_price ? `Limit: $${formatMoney(result.limit_price)}` : null,
@@ -1025,16 +1213,22 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
           inputSchema: {
             type: "object" as const,
             properties: {
+              mode: {
+                type: "string",
+                enum: ["paper", "live"],
+                description: "Which account to use. Required."
+              },
               symbol: { type: "string", description: "Option contract symbol or contract ID to exercise" },
             },
-            required: ["symbol"],
+            required: ["mode", "symbol"],
           },
         },
         handler: async (args) => {
           try {
+            const mode = args.mode as "paper" | "live"
             const symbol = (args.symbol as string).toUpperCase()
-            await getClient().exerciseOption(symbol)
-            return ok(`Exercise request submitted for ${symbol} [${modeLabel()}]`)
+            await getClient(mode).exerciseOption(symbol)
+            return ok(`Exercise request submitted for ${symbol} [${mode.toUpperCase()}]`)
           } catch (e) { return err(e instanceof Error ? e.message : String(e)) }
         },
       },
@@ -1070,7 +1264,11 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
             if (args.strike_price_lte) params.strike_price_lte = args.strike_price_lte as string
             if (args.limit) params.limit = String(Math.min(args.limit as number, 100))
 
-            const result = await getClient().getOptionChain(symbol, params)
+            // Options chain data is same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
+            const result = await client.getOptionChain(symbol, params)
             const snaps = result.snapshots || {}
             const keys = Object.keys(snaps)
 
@@ -1121,7 +1319,12 @@ export async function activate(ctx: PluginContext): Promise<PluginRegistrations>
         handler: async (args) => {
           try {
             const symbols = (args.symbols as string[]).map(s => s.toUpperCase())
-            const result = await getClient().getOptionSnapshots(symbols)
+
+            // Options quotes are same for paper/live - use whichever is configured
+            const client = getPaperClient() || getLiveClient()
+            if (!client) return err("No trading credentials configured")
+
+            const result = await client.getOptionSnapshots(symbols)
             const snaps = result.snapshots || {}
 
             if (Object.keys(snaps).length === 0) return ok("No option snapshot data available.")
